@@ -32,26 +32,6 @@ def estimate_doc_size(doc: dict) -> int:
     return len(bson.BSON.encode(doc))
 
 
-def build_stats_summary(attribute_stats: dict) -> list[dict]:
-    """Build flat stats_summary array for efficient MongoDB indexing."""
-    summary = []
-    for grade_name, grade_data in attribute_stats.items():
-        overall = grade_data.get("overall", {})
-        summary.append({
-            "grade": grade_name,
-            "lwm": overall.get("length_weighted_mean"),
-            "accumulation": overall.get("accumulation_grade_meters"),
-            "total_length": overall.get("total_length"),
-            "count": overall.get("count"),
-            "min": overall.get("min"),
-            "max": overall.get("max"),
-            "mean": overall.get("mean"),
-            "std": overall.get("std"),
-            "null_count": overall.get("null_count"),
-        })
-    return summary
-
-
 def build_gap_summary(gap_analysis: dict) -> dict:
     """Clean gap analysis for MongoDB (remove DataFrames)."""
     return {
@@ -62,24 +42,54 @@ def build_gap_summary(gap_analysis: dict) -> dict:
     }
 
 
-def build_categorical_summary(categorical_stats: dict) -> list[dict]:
-    """Build flat categorical_summary array for MongoDB storage.
+def _build_grade_stats_array(attribute_stats: dict, include_by_hole: bool = True) -> list[dict]:
+    """Convert attribute_stats dict into a flat array for MongoDB storage.
 
-    Each entry contains the attribute name, unique value count,
-    and top-N value distribution for quick queries.
+    Each element contains ``attribute``, ``overall``, and optionally
+    ``by_hole`` / ``hole_count``.  Using an array (rather than a dict
+    keyed by attribute name) allows efficient ``$elemMatch`` queries.
     """
-    summary = []
-    for attr_name, stats in categorical_stats.items():
-        # Include top 10 values for quick overview
-        top_values = stats.get("value_counts", [])[:10]
-        summary.append({
+    result = []
+    for attr_name, attr_data in attribute_stats.items():
+        entry: dict = {
             "attribute": attr_name,
-            "unique_count": stats.get("unique_count", 0),
-            "total_count": stats.get("total_count", 0),
-            "null_count": stats.get("null_count", 0),
-            "top_values": top_values,
-        })
-    return summary
+            "overall": attr_data.get("overall", {}),
+            "hole_count": attr_data.get("hole_count", 0),
+        }
+        if include_by_hole:
+            entry["by_hole"] = attr_data.get("by_hole", [])
+        result.append(entry)
+    return result
+
+
+def _build_categorical_stats_array(
+    categorical_stats: dict | None,
+    include_by_hole: bool = True,
+) -> list[dict]:
+    """Convert categorical_stats dict into a flat array for MongoDB.
+
+    Groups per-attribute fields under an ``overall`` key (mirroring the
+    numeric convention) so every statistics entry has the same shape:
+    ``{attribute, overall, by_hole}``.
+    """
+    if not categorical_stats:
+        return []
+    result = []
+    for attr_name, stats in categorical_stats.items():
+        entry: dict = {
+            "attribute": attr_name,
+            "overall": {
+                "unique_count": stats.get("unique_count", 0),
+                "total_count": stats.get("total_count", 0),
+                "null_count": stats.get("null_count", 0),
+                "truncated": stats.get("truncated", False),
+                "value_counts": stats.get("value_counts", []),
+            },
+        }
+        if include_by_hole:
+            entry["by_hole"] = stats.get("by_hole", [])
+        result.append(entry)
+    return result
 
 
 def prepare_collection_documents(
@@ -114,16 +124,20 @@ def prepare_collection_documents(
         },
     }
     
-    # Try building a single complete document first
-    cat_summary = build_categorical_summary(categorical_stats) if categorical_stats else []
+    # Determine data type and build unified statistics array
+    if attribute_stats:
+        data_type = "numeric"
+        statistics = _build_grade_stats_array(attribute_stats, include_by_hole=True)
+    else:
+        data_type = "categorical"
+        statistics = _build_categorical_stats_array(categorical_stats, include_by_hole=True)
 
+    # Try building a single complete document first
     full_doc = {
         **base_metadata,
         "doc_type": "complete",               # complete | summary | detail
-        "stats_summary": build_stats_summary(attribute_stats),
-        "categorical_summary": cat_summary,
-        "grade_statistics": attribute_stats,
-        "categorical_statistics": categorical_stats or {},
+        "data_type": data_type,
+        "statistics": statistics,
         "gap_analysis": build_gap_summary(gap_analysis),
     }
     
@@ -137,21 +151,16 @@ def prepare_collection_documents(
     print(f"    {collection_name}: {doc_size / 1024 / 1024:.1f} MB exceeds limit, splitting...")
     
     # Summary document: overall stats only (no per-hole data)
-    overall_only = {}
-    for grade_name, grade_data in attribute_stats.items():
-        overall_only[grade_name] = {
-            "overall": grade_data["overall"],
-            "hole_count": grade_data.get("hole_count", 0),
-            # omit by_hole to keep it small
-        }
-    
+    if attribute_stats:
+        summary_statistics = _build_grade_stats_array(attribute_stats, include_by_hole=False)
+    else:
+        summary_statistics = _build_categorical_stats_array(categorical_stats, include_by_hole=False)
+
     summary_doc = {
         **base_metadata,
         "doc_type": "summary",
-        "stats_summary": build_stats_summary(attribute_stats),
-        "categorical_summary": cat_summary,
-        "grade_statistics": overall_only,
-        "categorical_statistics": categorical_stats or {},
+        "data_type": data_type,
+        "statistics": summary_statistics,
         "gap_analysis": build_gap_summary(gap_analysis),
     }
     summary_doc["metadata"]["doc_size_bytes"] = estimate_doc_size(summary_doc)
@@ -212,10 +221,10 @@ def create_grade_stats_indexes(collection):
     """Create indexes optimized for grade value queries."""
     indexes_created = []
     
-    # Primary index: query by grade name and length-weighted mean
+    # Primary index: query by attribute name and length-weighted mean
     # Supports: "find all objects where Au LWM > 1.0"
     collection.create_index(
-        [("stats_summary.grade", 1), ("stats_summary.lwm", -1)],
+        [("statistics.attribute", 1), ("statistics.overall.length_weighted_mean", -1)],
         name="grade_lwm"
     )
     indexes_created.append("grade_lwm")
@@ -223,7 +232,7 @@ def create_grade_stats_indexes(collection):
     # Secondary index: query by accumulation (grade-meters)
     # Supports: "find objects with highest Au accumulation"
     collection.create_index(
-        [("stats_summary.grade", 1), ("stats_summary.accumulation", -1)],
+        [("statistics.attribute", 1), ("statistics.overall.accumulation_grade_meters", -1)],
         name="grade_accumulation"
     )
     indexes_created.append("grade_accumulation")
@@ -231,7 +240,7 @@ def create_grade_stats_indexes(collection):
     # Index on max grade value
     # Supports: "find objects with peak Au values > 10"
     collection.create_index(
-        [("stats_summary.grade", 1), ("stats_summary.max", -1)],
+        [("statistics.attribute", 1), ("statistics.overall.max", -1)],
         name="grade_max"
     )
     indexes_created.append("grade_max")
@@ -239,7 +248,7 @@ def create_grade_stats_indexes(collection):
     # Compound index for workspace-scoped grade queries
     # Supports: "find high-grade Au objects in this workspace"
     collection.create_index(
-        [("workspace_id", 1), ("stats_summary.grade", 1), ("stats_summary.lwm", -1)],
+        [("workspace_id", 1), ("statistics.attribute", 1), ("statistics.overall.length_weighted_mean", -1)],
         name="workspace_grade_lwm"
     )
     indexes_created.append("workspace_grade_lwm")
@@ -268,26 +277,25 @@ def find_high_grade_objects(
         workspace_id: Optional workspace filter
         limit: Max results to return
     """
-    # Build the $elemMatch query for the stats_summary array
-    elem_match = {"grade": grade}
+    # Build the $elemMatch query for the statistics array
+    elem_match = {"attribute": grade}
     
     if min_lwm is not None:
-        elem_match["lwm"] = {"$gte": min_lwm}
+        elem_match["overall.length_weighted_mean"] = {"$gte": min_lwm}
     if min_max is not None:
-        elem_match["max"] = {"$gte": min_max}
+        elem_match["overall.max"] = {"$gte": min_max}
     if min_accumulation is not None:
-        elem_match["accumulation"] = {"$gte": min_accumulation}
+        elem_match["overall.accumulation_grade_meters"] = {"$gte": min_accumulation}
     
-    query = {"stats_summary": {"$elemMatch": elem_match}}
+    query = {"data_type": "numeric", "statistics": {"$elemMatch": elem_match}}
     
     if workspace_id:
         query["workspace_id"] = workspace_id
     
-    # Sort by LWM descending
     results = list(collection.find(
         query,
-        {"object_id": 1, "object_name": 1, "stats_summary": 1, "timestamp": 1}
-    ).sort([("stats_summary.lwm", -1)]).limit(limit))
+        {"object_id": 1, "object_name": 1, "statistics": 1, "timestamp": 1}
+    ).sort([("statistics.overall.length_weighted_mean", -1)]).limit(limit))
     
     return results
 
@@ -301,17 +309,26 @@ def get_top_objects_by_grade(collection, grade: str, metric: str = "lwm", top_n:
         metric: One of "lwm", "max", "accumulation"
         top_n: Number of results
     """
+    # Mapping from short metric names to full field paths
+    _METRIC_FIELDS = {
+        "lwm": "length_weighted_mean",
+        "max": "max",
+        "accumulation": "accumulation_grade_meters",
+    }
+    overall_field = _METRIC_FIELDS.get(metric, metric)
+
     pipeline = [
-        {"$unwind": "$stats_summary"},
-        {"$match": {"stats_summary.grade": grade}},
-        {"$sort": {f"stats_summary.{metric}": -1}},
+        {"$match": {"data_type": "numeric"}},
+        {"$unwind": "$statistics"},
+        {"$match": {"statistics.attribute": grade}},
+        {"$sort": {f"statistics.overall.{overall_field}": -1}},
         {"$limit": top_n},
         {"$project": {
             "object_id": 1,
             "object_name": 1,
             "workspace_id": 1,
-            "grade": "$stats_summary.grade",
-            metric: f"$stats_summary.{metric}",
+            "grade": "$statistics.attribute",
+            metric: f"$statistics.overall.{overall_field}",
             "timestamp": 1,
         }}
     ]

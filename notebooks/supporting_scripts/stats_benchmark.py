@@ -124,30 +124,31 @@ def profile_high_grade_queries(collection, grade: str = "Au", iterations: int = 
     
     # Define the indexes we're testing
     grade_indexes = [
-        ("grade_lwm", [("stats_summary.grade", 1), ("stats_summary.lwm", -1)]),
-        ("grade_max", [("stats_summary.grade", 1), ("stats_summary.max", -1)]),
-        ("grade_accumulation", [("stats_summary.grade", 1), ("stats_summary.accumulation", -1)]),
-        ("workspace_grade_lwm", [("workspace_id", 1), ("stats_summary.grade", 1), ("stats_summary.lwm", -1)]),
+        ("grade_lwm", [("statistics.attribute", 1), ("statistics.overall.length_weighted_mean", -1)]),
+        ("grade_max", [("statistics.attribute", 1), ("statistics.overall.max", -1)]),
+        ("grade_accumulation", [("statistics.attribute", 1), ("statistics.overall.accumulation_grade_meters", -1)]),
+        ("workspace_grade_lwm", [("workspace_id", 1), ("statistics.attribute", 1), ("statistics.overall.length_weighted_mean", -1)]),
     ]
     
     # Define test queries
     test_cases = [
         {
             "name": f"find_high_grade_objects({grade}, min_lwm=0.5)",
-            "query": {"stats_summary": {"$elemMatch": {"grade": grade, "lwm": {"$gte": 0.5}}}},
+            "query": {"data_type": "numeric", "statistics": {"$elemMatch": {"attribute": grade, "overall.length_weighted_mean": {"$gte": 0.5}}}},
             "type": "find",
         },
         {
             "name": f"find_high_grade_objects({grade}, min_max=5.0)",
-            "query": {"stats_summary": {"$elemMatch": {"grade": grade, "max": {"$gte": 5.0}}}},
+            "query": {"data_type": "numeric", "statistics": {"$elemMatch": {"attribute": grade, "overall.max": {"$gte": 5.0}}}},
             "type": "find",
         },
         {
             "name": f"get_top_objects_by_grade({grade}, lwm, top_n=10)",
             "pipeline": [
-                {"$unwind": "$stats_summary"},
-                {"$match": {"stats_summary.grade": grade}},
-                {"$sort": {"stats_summary.lwm": -1}},
+                {"$match": {"data_type": "numeric"}},
+                {"$unwind": "$statistics"},
+                {"$match": {"statistics.attribute": grade}},
+                {"$sort": {"statistics.overall.length_weighted_mean": -1}},
                 {"$limit": 10},
             ],
             "type": "aggregate",

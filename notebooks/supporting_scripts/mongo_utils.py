@@ -62,6 +62,26 @@ def build_gap_summary(gap_analysis: dict) -> dict:
     }
 
 
+def build_categorical_summary(categorical_stats: dict) -> list[dict]:
+    """Build flat categorical_summary array for MongoDB storage.
+
+    Each entry contains the attribute name, unique value count,
+    and top-N value distribution for quick queries.
+    """
+    summary = []
+    for attr_name, stats in categorical_stats.items():
+        # Include top 10 values for quick overview
+        top_values = stats.get("value_counts", [])[:10]
+        summary.append({
+            "attribute": attr_name,
+            "unique_count": stats.get("unique_count", 0),
+            "total_count": stats.get("total_count", 0),
+            "null_count": stats.get("null_count", 0),
+            "top_values": top_values,
+        })
+    return summary
+
+
 def prepare_collection_documents(
     workspace_id: str,
     object_id: str,
@@ -70,6 +90,7 @@ def prepare_collection_documents(
     collection_name: str,
     attribute_stats: dict,
     gap_analysis: dict,
+    categorical_stats: dict | None = None,
 ) -> list[dict]:
     """Prepare MongoDB documents for one interval table.
     
@@ -94,11 +115,15 @@ def prepare_collection_documents(
     }
     
     # Try building a single complete document first
+    cat_summary = build_categorical_summary(categorical_stats) if categorical_stats else []
+
     full_doc = {
         **base_metadata,
         "doc_type": "complete",               # complete | summary | detail
         "stats_summary": build_stats_summary(attribute_stats),
+        "categorical_summary": cat_summary,
         "grade_statistics": attribute_stats,
+        "categorical_statistics": categorical_stats or {},
         "gap_analysis": build_gap_summary(gap_analysis),
     }
     
@@ -124,7 +149,9 @@ def prepare_collection_documents(
         **base_metadata,
         "doc_type": "summary",
         "stats_summary": build_stats_summary(attribute_stats),
+        "categorical_summary": cat_summary,
         "grade_statistics": overall_only,
+        "categorical_statistics": categorical_stats or {},
         "gap_analysis": build_gap_summary(gap_analysis),
     }
     summary_doc["metadata"]["doc_size_bytes"] = estimate_doc_size(summary_doc)

@@ -34,8 +34,21 @@ def get_explain_stats(collection, query: dict) -> dict:
     }
 
 
-def run_index_benchmark(collection, workspace_id: str, object_id: str):
-    """Benchmark queries with and without indexes."""
+def run_index_benchmark(collection):
+    """Benchmark queries with and without indexes.
+    
+    Discovers a sample workspace_id and object_id from the collection
+    to use in test queries.
+    """
+    # Pick a sample document to get realistic query values
+    sample = collection.find_one({}, {"workspace_id": 1, "object_id": 1})
+    if not sample:
+        print("No documents in collection to benchmark against.")
+        return []
+    
+    workspace_id = sample.get("workspace_id", "")
+    object_id = sample.get("object_id", "")
+    print(f"Using sample: workspace_id={workspace_id}, object_id={object_id}")
     
     # Define the two indexes to test
     indexes = [
@@ -87,7 +100,7 @@ def run_index_benchmark(collection, workspace_id: str, object_id: str):
         # Calculate improvement
         if no_idx_profile['mean_ms'] > 0:
             improvement = ((no_idx_profile['mean_ms'] - with_idx_profile['mean_ms']) / no_idx_profile['mean_ms']) * 100
-            print(f"\n   ⚡ Improvement: {improvement:.1f}%")
+            print(f"\n   Improvement: {improvement:.1f}%")
         
         results.append({
             "index_name": idx_config["name"],
@@ -154,7 +167,7 @@ def profile_high_grade_queries(collection, grade: str = "Au", iterations: int = 
         except Exception:
             pass
     
-    print("\n📊 WITHOUT INDEXES:\n")
+    print("\nWITHOUT INDEXES:\n")
     no_idx_results = {}
     
     for test in test_cases:
@@ -199,7 +212,7 @@ def profile_high_grade_queries(collection, grade: str = "Au", iterations: int = 
         collection.create_index(idx_keys, name=idx_name)
     print(f"Created: {[name for name, _ in grade_indexes]}")
     
-    print("\n📊 WITH INDEXES:\n")
+    print("\nWITH INDEXES:\n")
     with_idx_results = {}
     
     for test in test_cases:

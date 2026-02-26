@@ -1,5 +1,6 @@
 """MongoDB utilities for Evo statistics storage and querying."""
 
+import re
 import bson
 from datetime import datetime, timezone
 from pymongo import MongoClient
@@ -9,6 +10,41 @@ from pymongo.errors import ConnectionFailure
 # MongoDB document size limit
 MONGO_DOC_LIMIT = 16 * 1024 * 1024  # 16 MB
 SAFE_DOC_LIMIT = 14 * 1024 * 1024   # 14 MB — leave headroom
+
+
+def build_object_uri(base_url: str, org_id: str, workspace_id: str, object_id: str) -> str:
+    """Return the Evo web URI for an object.
+
+    Format: {base_url}/{org_id}/data/{workspace_id}/objects/{object_id}
+    """
+    return f"{base_url.rstrip('/')}/{org_id}/data/{workspace_id}/objects/{object_id}"
+
+
+def extract_referenced_uris(
+    summary_text: str,
+    objects_map: dict[str, str],
+    base_url: str,
+    org_id: str,
+    workspace_id: str,
+) -> list[str]:
+    """Scan *summary_text* for object names and return matching Evo URIs.
+
+    Args:
+        summary_text: The agent summary text to scan.
+        objects_map: Mapping of ``{object_name: object_id}``.
+        base_url: Evo web base URL (e.g. ``https://evo.integration.seequent.com``).
+        org_id: Organisation UUID.
+        workspace_id: Workspace UUID.
+
+    Returns:
+        Deduplicated list of Evo object URIs for objects whose name appears
+        (case-insensitive) in *summary_text*.
+    """
+    uris: list[str] = []
+    for name, oid in objects_map.items():
+        if re.search(re.escape(name), summary_text, re.IGNORECASE):
+            uris.append(build_object_uri(base_url, org_id, workspace_id, oid))
+    return list(dict.fromkeys(uris))  # deduplicate, preserve order
 
 
 def connect_to_mongodb(uri: str, db_name: str, collection_name: str):
@@ -255,6 +291,137 @@ def create_grade_stats_indexes(collection):
     
     print(f"✓ Created {len(indexes_created)} grade query indexes: {indexes_created}")
     return indexes_created
+
+
+def create_hierarchy_indexes(collection):
+    """Create indexes that support the four-tier hierarchy and cascading updates.
+
+    Indexes created:
+      1. Unique compound indexes per hierarchy level (natural-key dedup/upsert)
+      2. parent_id index (fast child lookups during cascade)
+      3. hierarchy_level index (level-scoped queries)
+    """
+    indexes_created = []
+
+    # 1. Component uniqueness: one doc per (object, collection, doc_type, data_type)
+    collection.create_index(
+        [
+            ("hierarchy_level", 1),
+            ("object_id", 1),
+            ("collection_name", 1),
+            ("doc_type", 1),
+            ("data_type", 1),
+        ],
+        name="uq_component",
+        unique=True,
+        partialFilterExpression={"hierarchy_level": "component"},
+    )
+    indexes_created.append("uq_component")
+
+    # 2. Object uniqueness: one doc per object within its workspace
+    collection.create_index(
+        [("hierarchy_level", 1), ("object_id", 1)],
+        name="uq_object",
+        unique=True,
+        partialFilterExpression={"hierarchy_level": "object"},
+    )
+    indexes_created.append("uq_object")
+
+    # 3. Workspace uniqueness: one doc per workspace
+    collection.create_index(
+        [("hierarchy_level", 1), ("workspace_id", 1)],
+        name="uq_workspace",
+        unique=True,
+        partialFilterExpression={"hierarchy_level": "workspace"},
+    )
+    indexes_created.append("uq_workspace")
+
+    # 4. Organisation uniqueness: exactly one doc
+    collection.create_index(
+        [("hierarchy_level", 1)],
+        name="uq_organisation",
+        unique=True,
+        partialFilterExpression={"hierarchy_level": "organisation"},
+    )
+    indexes_created.append("uq_organisation")
+
+    # 5. parent_id — fast child lookups for cascade traversal
+    collection.create_index(
+        [("parent_id", 1)],
+        name="idx_parent_id",
+    )
+    indexes_created.append("idx_parent_id")
+
+    # 6. hierarchy_level — fast level-scoped counts / queries
+    collection.create_index(
+        [("hierarchy_level", 1)],
+        name="idx_hierarchy_level",
+    )
+    indexes_created.append("idx_hierarchy_level")
+
+    print(f"✓ Created {len(indexes_created)} hierarchy indexes: {indexes_created}")
+    return indexes_created
+
+
+def get_ancestor_chain(collection, doc_id) -> list[dict]:
+    """Walk from *doc_id* up to the root via ``parent_id`` links.
+
+    Returns a list ordered child → root.  Each element is a dict with
+    ``_id``, ``hierarchy_level``, ``parent_id``, and the natural-key
+    fields (``object_id``, ``workspace_id``, etc.).
+
+    Args:
+        collection: PyMongo collection handle.
+        doc_id: ``_id`` (ObjectId) of the starting document.
+
+    Returns:
+        List of ancestor dicts from the starting doc upward.
+    """
+    chain: list[dict] = []
+    current_id = doc_id
+
+    projection = {
+        "hierarchy_level": 1,
+        "parent_id": 1,
+        "object_id": 1,
+        "workspace_id": 1,
+        "object_name": 1,
+        "collection_name": 1,
+        "doc_type": 1,
+    }
+
+    while current_id is not None:
+        doc = collection.find_one({"_id": current_id}, projection)
+        if doc is None:
+            break
+        chain.append(doc)
+        current_id = doc.get("parent_id")
+
+    return chain
+
+
+def get_children(collection, parent_id, projection: dict | None = None) -> list[dict]:
+    """Return all documents whose ``parent_id`` equals *parent_id*.
+
+    Args:
+        collection: PyMongo collection handle.
+        parent_id: ``_id`` (ObjectId) of the parent document.
+        projection: Optional MongoDB projection dict.
+
+    Returns:
+        List of child documents.
+    """
+    proj = projection or {
+        "hierarchy_level": 1,
+        "parent_id": 1,
+        "object_id": 1,
+        "workspace_id": 1,
+        "object_name": 1,
+        "collection_name": 1,
+        "doc_type": 1,
+        "agent_summary": 1,
+    }
+    return list(collection.find({"parent_id": parent_id}, proj))
 
 
 def find_high_grade_objects(

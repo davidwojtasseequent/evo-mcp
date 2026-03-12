@@ -24,6 +24,7 @@
 - [Advanced](#advanced)
   - [Testing with curl](#testing-with-curl)
   - [Testing with a Google ADK agent](#testing-with-a-google-adk-agent)
+- [VS Code Agent Plugin](#vs-code-agent-plugin)
 - [Development](#development)
 - [Contributing](#contributing)
 - [Code of conduct](#code-of-conduct)
@@ -498,6 +499,46 @@ MCP_TOOL_FILTER=all
   ```
 
 Browse to http://localhost:8000 to interact with the agent.
+
+## VS Code Agent Plugin
+
+This repo is also packaged as a VS Code **agent plugin**, which bundles the MCP server together with skills and agent definitions that Copilot can use automatically.
+
+### Install via git remote
+
+Add the repository to your VS Code settings:
+
+```jsonc
+// .vscode/settings.json
+{
+  "chat.plugins.marketplaces": [
+    "https://github.com/SeequentEvo/evo-mcp"
+  ]
+}
+```
+
+Then open the Extensions view and search for **evo-mcp** under the Copilot Plugins tab.
+
+### Install from a local clone
+
+```jsonc
+// .vscode/settings.json
+{
+  "chat.plugins.paths": [
+    "/path/to/evo-mcp"
+  ]
+}
+```
+
+### What the plugin provides
+
+| Component | Path | Purpose |
+|-----------|------|---------|
+| MCP Server | `.mcp.json` | Launches the Evo MCP server via `uvx` |
+| Object Schema skill | `skills/evo-objects/` | Geoscience object reference for Copilot |
+| Data Import skill | `skills/evo-data-import/` | CSV-to-Evo import workflow guidance |
+| Admin agent | `agents/evo-admin.agent.md` | Workspace & user management agent |
+| Data agent | `agents/evo-data.agent.md` | Data import specialist agent |
 
 ## Development
 

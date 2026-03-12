@@ -1,0 +1,11 @@
+{
+  "name": "evo-mcp",
+  "description": "Evo geoscience platform tools — workspace management, object operations, and data import via MCP",
+  "version": "0.1.0",
+  "keywords": ["geoscience", "evo", "mcp", "seequent", "drillholes", "geology"],
+  "author": { "name": "Bentley Systems / Seequent" },
+  "repository": "https://github.com/SeequentEvo/evo-mcp",
+  "license": "Apache-2.0",
+  "skills": ["skills/evo-objects", "skills/evo-data-import"],
+  "mcpServers": ".mcp.json"
+}

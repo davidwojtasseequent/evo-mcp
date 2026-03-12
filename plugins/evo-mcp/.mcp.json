@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "evo-mcp": {
+      "command": "c:/Dev/evo-mcp-fork/.venv/Scripts/python",
+      "args": ["-m", "evo_mcp"]
+    }
+  }
+}

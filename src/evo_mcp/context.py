@@ -19,6 +19,7 @@ from uuid import UUID
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
+from platformdirs import user_cache_dir
 from evo.aio import AioTransport
 from evo.oauth import OAuthConnector, AuthorizationCodeAuthorizer, AccessTokenAuthorizer, EvoScopes
 from evo.discovery import DiscoveryAPIClient
@@ -48,10 +49,9 @@ class EvoContext:
         self._initialized: bool = False
         self.org_id: Optional[UUID] = None
         self.hub_url: Optional[str] = None
-        repo_root = Path(__file__).parent.parent.parent
-        self.cache_path = repo_root / ".cache"
+        self.cache_path = Path(user_cache_dir("evo-mcp"))
         if not self.cache_path.exists():
-            self.cache_path.mkdir()
+            self.cache_path.mkdir(parents=True)
 
         self._cached_variables = [
             "org_id",

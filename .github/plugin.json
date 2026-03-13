@@ -7,5 +7,6 @@
   "repository": "https://github.com/SeequentEvo/evo-mcp",
   "license": "Apache-2.0",
   "skills": ["skills/evo-objects", "skills/evo-data-import"],
+  "agents": ["agents"],
   "mcpServers": ".mcp.json"
 }

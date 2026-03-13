@@ -6,7 +6,7 @@
       "name": "evo-mcp",
       "description": "Evo geoscience platform tools — workspace management, object operations, and data import via MCP",
       "version": "0.1.0",
-      "source": "plugins/evo-mcp"
+      "source": "."
     }
   ]
 }
